@@ -96,7 +96,9 @@ class QuotaSetsController(wsgi.Controller):
         self._driver.delete_tenant_quota(request.context, id)
 
     def update(self, request, id, body=None):
-        self._check_admin(request.context)
+        #Disabled the admin checking
+        #Assuming Account will be validated by IAM
+        #self._check_admin(request.context)
         if self._update_extended_attributes:
             self._update_attributes()
         body = base.Controller.prepare_request_body(
