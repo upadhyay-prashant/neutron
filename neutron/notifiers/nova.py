@@ -23,7 +23,8 @@ from sqlalchemy.orm import attributes as sql_attr
 
 from neutron._i18n import _LE, _LI, _LW
 from neutron.common import constants
-from neutron import context
+from neutron import context as Context
+from neutron.i18n import _LE, _LI, _LW
 from neutron import manager
 from neutron.notifiers import batch_notifier
 
@@ -32,7 +33,6 @@ LOG = logging.getLogger(__name__)
 
 VIF_UNPLUGGED = 'network-vif-unplugged'
 VIF_PLUGGED = 'network-vif-plugged'
-VIF_DELETED = 'network-vif-deleted'
 NEUTRON_NOVA_EVENT_STATUS_MAP = {constants.PORT_STATUS_ACTIVE: 'completed',
                                  constants.PORT_STATUS_ERROR: 'failed',
                                  constants.PORT_STATUS_DOWN: 'completed'}
@@ -46,22 +46,38 @@ class Notifier(object):
         # and each Notifier is handling it's own auth. That means that we are
         # authenticating the exact same thing len(controllers) times. This
         # should be an easy thing to optimize.
-        auth = ks_loading.load_auth_from_conf_options(cfg.CONF, 'nova')
+        #auth = ks_loading.load_auth_from_conf_options(cfg.CONF, 'nova')
 
-        session = ks_loading.load_session_from_conf_options(
-            cfg.CONF,
-            'nova',
-            auth=auth)
+        #session = ks_loading.load_session_from_conf_options(
+        #    cfg.CONF,
+        #    'nova',
+        #    auth=auth)
 
-        extensions = [
-            ext for ext in nova_client.discover_extensions(NOVA_API_VERSION)
-            if ext.name == "server_external_events"]
-        self.nclient = nova_client.Client(
-            NOVA_API_VERSION,
-            session=session,
+        #extensions = [
+        #    ext for ext in nova_client.discover_extensions(NOVA_API_VERSION)
+        #    if ext.name == "server_external_events"]
+        #self.nclient = nova_client.Client(
+        #    NOVA_API_VERSION,
+        #    session=session,
+        #    region_name=cfg.CONF.nova.region_name,
+        #    endpoint_type=cfg.CONF.nova.endpoint_type,
+        #    extensions=extensions)
+
+        novaclient_cls = nova_client.get_client_class(NOVA_API_VERSION)
+        server_external_events = importutils.import_module(
+            novaclient_cls.__module__.replace(
+                ".client", ".contrib.server_external_events"))
+
+        self.nclient = novaclient_cls(
+            #session=session,
+            project_id='LetMeHandleNovaNeutronTalks',
+            auth_token='1233123123123123123123123123',
+            auth_system=None,
+            http_log_debug=True,
             region_name=cfg.CONF.nova.region_name,
-            endpoint_type=cfg.CONF.nova.endpoint_type,
-            extensions=extensions)
+            bypass_url='http://localhost:8774',
+            extensions=[server_external_events])
+
         self.batch_notifier = batch_notifier.BatchNotifier(
             cfg.CONF.send_events_interval, self.send_events)
 
@@ -75,14 +91,15 @@ class Notifier(object):
             pass
         return False
 
-    def _get_network_changed_event(self, device_id):
-        return {'name': 'network-changed',
-                'server_uuid': device_id}
-
-    def _get_port_delete_event(self, port):
-        return {'server_uuid': port['device_id'],
-                'name': VIF_DELETED,
-                'tag': port['id']}
+    def _get_network_changed_event(self, device_id,context=None):
+        res={}
+        if context is not None:
+            res['project_id'] = context.project_id
+            res['token'] = context.auth_token
+            res['user_id'] = context.user_id
+        res['name'] = 'network-changed'
+        res['server_uuid'] = device_id
+        return res
 
     @property
     def _plugin(self):
@@ -94,7 +111,7 @@ class Notifier(object):
         return self._plugin_ref
 
     def send_network_change(self, action, original_obj,
-                            returned_obj):
+                            returned_obj,context=None):
         """Called when a network change is made that nova cares about.
 
         :param action: the event that occurred.
@@ -114,16 +131,16 @@ class Notifier(object):
                 and original_obj.get('port_id')):
             disassociate_returned_obj = {'floatingip': {'port_id': None}}
             event = self.create_port_changed_event(action, original_obj,
-                                                   disassociate_returned_obj)
+                                                   disassociate_returned_obj,context=context)
             self.batch_notifier.queue_event(event)
 
         event = self.create_port_changed_event(action, original_obj,
-                                               returned_obj)
+                                               returned_obj,context=context)
         self.batch_notifier.queue_event(event)
 
-    def create_port_changed_event(self, action, original_obj, returned_obj):
+    def create_port_changed_event(self, action, original_obj, returned_obj,context=None):
         port = None
-        if action in ['update_port', 'delete_port']:
+        if action == 'update_port':
             port = returned_obj['port']
 
         elif action in ['update_floatingip', 'create_floatingip',
@@ -137,14 +154,11 @@ class Notifier(object):
             if port_id is None:
                 return
 
-            ctx = context.get_admin_context()
+            ctx = Context.get_admin_context()
             port = self._plugin.get_port(ctx, port_id)
 
         if port and self._is_compute_port(port):
-            if action == 'delete_port':
-                return self._get_port_delete_event(port)
-            else:
-                return self._get_network_changed_event(port['device_id'])
+            return self._get_network_changed_event(port['device_id'],context)
 
     def record_port_status_changed(self, port, current_port_status,
                                    previous_port_status, initiator):
@@ -205,8 +219,8 @@ class Notifier(object):
     def send_events(self, batched_events):
         LOG.debug("Sending events: %s", batched_events)
         try:
-            response = self.nclient.server_external_events.create(
-                batched_events)
+            response = self.nclient.server_external_events.create(batched_events,
+                project_id="LetMeHandleNovaNeutronNotifications")
         except nova_exceptions.NotFound:
             LOG.warning(_LW("Nova returned NotFound for event: %s"),
                         batched_events)
