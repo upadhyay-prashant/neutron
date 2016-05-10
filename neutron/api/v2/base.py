@@ -307,9 +307,9 @@ class Controller(object):
             else:
                 self._dhcp_agent_notifier.notify(context, data, methodname)
 
-    def _send_nova_notification(self, action, orig, returned):
+    def _send_nova_notification(self, action, orig, returned,context=None):
         if hasattr(self, '_nova_notifier'):
-            self._nova_notifier.send_network_change(action, orig, returned)
+            self._nova_notifier.send_network_change(action, orig, returned,context=context)
 
     def index(self, request, **kwargs):
         """Returns a list of the requested entity."""
@@ -493,7 +493,7 @@ class Controller(object):
                             notifier_method,
                             {self._resource + '_id': id})
         result = {self._resource: self._view(request.context, obj)}
-        self._send_nova_notification(action, {}, result)
+        self._send_nova_notification(action, {}, result,context=request.context)
         self._send_dhcp_notification(request.context,
                                      result,
                                      notifier_method)
@@ -557,7 +557,7 @@ class Controller(object):
         self._send_dhcp_notification(request.context,
                                      result,
                                      notifier_method)
-        self._send_nova_notification(action, orig_object_copy, result)
+        self._send_nova_notification(action, orig_object_copy, result,context=request.context)
         return result
 
     @staticmethod
